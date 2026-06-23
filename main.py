@@ -3,7 +3,6 @@ import argparse
 from rich.console import Console, Group
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.live import Live
-from rich.prompt import Prompt, Confirm
 
 # Import our modules
 from config import DEFAULT_DURATION, THREAD_COUNT, RESULTS_DIR, DEFAULT_MONITOR_INTERVAL
@@ -25,7 +24,7 @@ console = Console()
 VERBOSE = False
 
 
-def run_benchmark_cycle(selections):
+def run_benchmark_cycle():
     monitor = SystemMonitor(interval=DEFAULT_MONITOR_INTERVAL)
     monitor.start()
 
@@ -44,43 +43,35 @@ def run_benchmark_cycle(selections):
     ui_refresh_rate = max(4, int(1 / DEFAULT_MONITOR_INTERVAL))
 
     with Live(Group(progress, stats_display), refresh_per_second=ui_refresh_rate):
-        # CPU
-        if '1' in selections:
-            stats_display.active_component = "CPU"
-            task = progress.add_task(
-                "[cyan]Running CPU Benchmark...", total=100)
-            cpu_bench = CPUBenchmark(
-                duration=DEFAULT_DURATION, threads=THREAD_COUNT)
-            results['cpu'] = cpu_bench.run_all(verbose=VERBOSE)
-            progress.update(task, completed=100)
+        stats_display.active_component = "CPU"
+        task = progress.add_task(
+            "[cyan]Running CPU Benchmark...", total=100)
+        cpu_bench = CPUBenchmark(
+            duration=DEFAULT_DURATION, threads=THREAD_COUNT)
+        results['cpu'] = cpu_bench.run_all(verbose=VERBOSE)
+        progress.update(task, completed=100)
 
-        # Memory
-        if '2' in selections:
-            stats_display.active_component = "MEMORY"
-            task = progress.add_task(
-                "[magenta]Running Memory Benchmark...", total=100)
-            mem_bench = MemoryBenchmark(duration=DEFAULT_DURATION)
-            results['memory'] = mem_bench.run_all(verbose=VERBOSE)
-            progress.update(task, completed=100)
+        stats_display.active_component = "MEMORY"
+        task = progress.add_task(
+            "[magenta]Running Memory Benchmark...", total=100)
+        mem_bench = MemoryBenchmark(duration=DEFAULT_DURATION)
+        results['memory'] = mem_bench.run_all(verbose=VERBOSE)
+        progress.update(task, completed=100)
 
-        # Disk
-        if '3' in selections:
-            stats_display.active_component = "DISK"
-            task = progress.add_task(
-                "[yellow]Running Disk Benchmark...", total=100)
-            disk_bench = DiskBenchmark(
-                target_dir=RESULTS_DIR, duration=DEFAULT_DURATION)
-            results['disk'] = disk_bench.run_all(verbose=VERBOSE)
-            progress.update(task, completed=100)
+        stats_display.active_component = "DISK"
+        task = progress.add_task(
+            "[yellow]Running Disk Benchmark...", total=100)
+        disk_bench = DiskBenchmark(
+            target_dir=RESULTS_DIR, duration=DEFAULT_DURATION)
+        results['disk'] = disk_bench.run_all(verbose=VERBOSE)
+        progress.update(task, completed=100)
 
-        # GPU
-        if '4' in selections:
-            stats_display.active_component = "GPU"
-            task = progress.add_task(
-                "[green]Running GPU Benchmark...", total=100)
-            gpu_bench = GPUBenchmark(duration=DEFAULT_DURATION)
-            results['gpu'] = gpu_bench.run_all(verbose=VERBOSE)
-            progress.update(task, completed=100)
+        stats_display.active_component = "GPU"
+        task = progress.add_task(
+            "[green]Running GPU Benchmark...", total=100)
+        gpu_bench = GPUBenchmark(duration=DEFAULT_DURATION)
+        results['gpu'] = gpu_bench.run_all(verbose=VERBOSE)
+        progress.update(task, completed=100)
 
     monitor.stop()
     monitor.join()
@@ -105,26 +96,9 @@ def main():
     args = parser.parse_args()
     VERBOSE = args.verbose
 
-    while True:
-        os.system('cls' if os.name == 'nt' else 'clear')
-        show_welcome()
-        choice_raw = Prompt.ask(
-            "Select benchmarks (e.g. 1,2,3) or 'all'", default='all')
-
-        if choice_raw.lower() == 'exit':
-            break
-
-        if choice_raw.lower() == 'all':
-            selections = ['1', '2', '3', '4']
-        else:
-            selections = [s.strip()
-                          for s in choice_raw.replace(',', ' ').split()]
-
-        if selections:
-            run_benchmark_cycle(selections)
-
-        if not Confirm.ask("\nRun another benchmark?"):
-            break
+    os.system('cls' if os.name == 'nt' else 'clear')
+    show_welcome()
+    run_benchmark_cycle()
 
 
 if __name__ == "__main__":
