@@ -7,6 +7,11 @@ try:
 except Exception:
     HAS_OPENCL = False
 
+# Compute-intensity knob: math iterations per element in the compute kernel.
+# The reported throughput is normalized by this value so the score stays
+# comparable regardless of how high it is set.
+COMPUTE_INNER_ITERS = 256
+
 
 class GPUBenchmark:
     def __init__(self, duration=5):
@@ -40,24 +45,33 @@ class GPUBenchmark:
         try:
             import numpy as np
             import pyopencl.array as cla
-            SIZE = 1024 * 1024
+            SIZE = 16 * 1024 * 1024
             src = cla.to_device(
                 self.queue, np.random.rand(SIZE).astype(np.float32))
             dst = cla.empty_like(src)
             prog = cl.Program(self.ctx, """
                 __kernel void compute(__global float* src, __global float* dst) {
                     int i = get_global_id(0);
-                    dst[i] = sqrt(src[i]) * log(src[i] + 1.0f) * sin(src[i]);
+                    float x = src[i];
+                    float acc = 0.0f;
+                    for (int k = 0; k < %d; k++) {
+                        acc += sqrt(x) * log(x + 1.0f) * sin(x + k);
+                    }
+                    dst[i] = acc;
                 }
-            """).build()
+            """ % COMPUTE_INNER_ITERS).build()
+            kernel = cl.Kernel(prog, "compute")
             count = 0
             start = time.perf_counter()
             while time.perf_counter() - start < self.duration:
-                prog.compute(self.queue, (SIZE,), None, src.data, dst.data)
+                kernel(self.queue, (SIZE,), None, src.data, dst.data)
                 self.queue.finish()
                 count += 1
             elapsed = time.perf_counter() - start
-            return (count * SIZE) / elapsed / 1e6
+            # Normalize by the inner-loop count so the reported throughput is
+            # invariant to the compute-intensity knob (matches the original
+            # single-op-per-element scale when COMPUTE_INNER_ITERS == 1).
+            return (count * SIZE * COMPUTE_INNER_ITERS) / elapsed / 1e6
         except Exception:
             return self._cpu_fallback_compute()
 

@@ -1,18 +1,32 @@
 import time
 import os
-import random
 import gc
+from array import array
+
+
+# Baseline alloc block size; alloc throughput is normalized to it so the
+# metric (and score) is invariant to the alloc_size intensity knob.
+BASE_ALLOC_SIZE = 1024 * 1024
 
 
 class MemoryBenchmark:
-    def __init__(self, duration=5):
+    def __init__(self, duration=5, seq_buf_size=512 * 1024 * 1024,
+                 rand_buf_size=256 * 1024 * 1024,
+                 copy_chunk=256 * 1024 * 1024,
+                 alloc_size=1024 * 1024):
         self.duration = duration
+        # Intensity knobs (raise to exceed caches / move more bytes):
+        self.seq_buf_size = seq_buf_size    # sequential bandwidth buffer
+        self.rand_buf_size = rand_buf_size  # random-access buffer (latency)
+        self.copy_chunk = copy_chunk        # bytes per memoryview copy
+        self.alloc_size = alloc_size        # bytes per alloc/free cycle
+        self._alloc_factor = self.alloc_size / BASE_ALLOC_SIZE
 
     # ── Sequential bandwidth ──────────────────────────────────────────────────
 
     def seq_bandwidth(self):
         """MB/s of raw memory read/write using bytearray copies."""
-        BUF_SIZE = 128 * 1024 * 1024  # 128 MB
+        BUF_SIZE = self.seq_buf_size
         buf = bytearray(os.urandom(BUF_SIZE))
         total_bytes = 0
         start = time.perf_counter()
@@ -33,18 +47,36 @@ class MemoryBenchmark:
     # ── Random access speed ───────────────────────────────────────────────────
 
     def random_latency(self):
-        """IOPS of random 8-byte reads from a 64 MB buffer."""
-        SIZE = 64 * 1024 * 1024
-        INTS = SIZE // 8
-        buf = [random.random()
-               for _ in range(min(INTS, 1_000_000))]  # keep tractable
+        """Dependent-load reads/s over a buffer sized to exceed CPU cache.
+
+        Uses pointer chasing (each read's result selects the next index) so
+        the CPU cannot trivially prefetch, over a buffer larger than the
+        last-level cache so the loads actually hit main memory. The index
+        table is filled with a large prime stride (coprime to the slot
+        count) which is O(n) to build yet scatters accesses across pages.
+        """
+        slots = max(1024, self.rand_buf_size // 8)  # 8 bytes per 'q' entry
+        # Large prime stride keeps successive accesses far apart (many pages),
+        # defeating simple sequential prefetch without an expensive shuffle.
+        stride = 1572869 % slots or 1
+        # buf[i] = (i + stride) % slots, built at C speed via concatenation.
+        buf = array('q', range(stride, slots))
+        buf.extend(range(0, stride))
+
+        idx = 0
         count = 0
         start = time.perf_counter()
-        rng = random.Random()
-        blen = len(buf)
         while time.perf_counter() - start < self.duration:
-            _ = buf[rng.randint(0, blen - 1)]
-            count += 1
+            # Unrolled to amortize the Python loop overhead per dependent load.
+            idx = buf[idx]
+            idx = buf[idx]
+            idx = buf[idx]
+            idx = buf[idx]
+            idx = buf[idx]
+            idx = buf[idx]
+            idx = buf[idx]
+            idx = buf[idx]
+            count += 8
         elapsed = time.perf_counter() - start
         return count / elapsed if elapsed > 1e-6 else 0.0
 
@@ -52,7 +84,7 @@ class MemoryBenchmark:
 
     def copy_speed(self):
         """GB/s of memoryview-based copy."""
-        CHUNK = 256 * 1024 * 1024  # 256 MB
+        CHUNK = self.copy_chunk
         src = bytearray(CHUNK)
         dst = bytearray(CHUNK)
         total = 0
@@ -72,11 +104,13 @@ class MemoryBenchmark:
         count = 0
         start = time.perf_counter()
         while time.perf_counter() - start < self.duration:
-            _ = bytearray(1024 * 1024)
+            _ = bytearray(self.alloc_size)
             count += 1
         gc.collect()
         elapsed = time.perf_counter() - start
-        return count / elapsed if elapsed > 1e-6 else 0.0
+        if elapsed <= 1e-6:
+            return 0.0
+        return (count * self._alloc_factor) / elapsed
 
     def run_all(self, verbose=False):
         results = {}

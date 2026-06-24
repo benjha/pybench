@@ -5,10 +5,34 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 class DiskBenchmark:
-    def __init__(self, target_dir=".", duration=10):
+    def __init__(self, target_dir=".", duration=10,
+                 file_size=1 * 1024 * 1024 * 1024,
+                 seq_threads=8, rnd_threads=32,
+                 seq_block=1024 * 1024, rnd_block=4096,
+                 exceed_ram=False):
         self.test_file = os.path.join(target_dir, "CDM_test.tmp")
         self.duration = duration
-        self.file_size = 1 * 1024 * 1024 * 1024  # 1 GB
+        # Intensity knobs:
+        self.file_size = file_size      # working-set size on disk
+        self.seq_threads = seq_threads  # queue depth for sequential test
+        self.rnd_threads = rnd_threads  # queue depth for random test
+        self.seq_block = seq_block      # sequential block size
+        self.rnd_block = rnd_block      # random block size
+        # When True, grow the test file beyond physical RAM so reads cannot
+        # all be served from the OS page cache (measures the real drive).
+        if exceed_ram:
+            self.file_size = max(self.file_size, self._ram_busting_size())
+
+    @staticmethod
+    def _ram_busting_size():
+        """A file size comfortably larger than physical RAM (best effort)."""
+        try:
+            import psutil
+            total_ram = psutil.virtual_memory().total
+        except Exception:
+            total_ram = 8 * 1024 * 1024 * 1024  # assume 8 GB if unknown
+        # 1.5x RAM ensures the page cache cannot hold the whole working set.
+        return int(total_ram * 1.5)
 
     # ── File preparation ──────────────────────────────────────────────────────
 
@@ -32,7 +56,7 @@ class DiskBenchmark:
     # ── SEQ 1M Q8T1 ───────────────────────────────────────────────────────────
 
     def seq_1m_q8t1(self, mode="write"):
-        block_size = 1024 * 1024
+        block_size = self.seq_block
         data = os.urandom(block_size)
 
         def write_task():
@@ -66,13 +90,13 @@ class DiskBenchmark:
             return total_mb / elapsed if elapsed > 1e-6 else 0.0
 
         task = write_task if mode == "write" else read_task
-        raw = self._threaded_io(task, threads=8)   # MB/s per thread summed
+        raw = self._threaded_io(task, threads=self.seq_threads)  # MB/s summed
         return raw
 
     # ── RND 4K Q32T1 ──────────────────────────────────────────────────────────
 
     def rnd_4k_q32t1(self, mode="write"):
-        block_size = 4096
+        block_size = self.rnd_block
         data = os.urandom(block_size)
 
         def write_task():
@@ -104,7 +128,7 @@ class DiskBenchmark:
             return count / elapsed if elapsed > 1e-6 else 0.0
 
         task = write_task if mode == "write" else read_task
-        return self._threaded_io(task, threads=32)
+        return self._threaded_io(task, threads=self.rnd_threads)
 
     # ── Cleanup ───────────────────────────────────────────────────────────────
 
