@@ -35,9 +35,9 @@ def run_benchmark_cycle():
 
     A background ``SystemMonitor`` samples hardware telemetry for the whole
     run. Each module is executed in sequence inside a Rich ``Live`` view that
-    shows a progress bar plus a real-time stats panel for the active
-    component. Afterwards the collected metrics are aggregated, scored, written
-    to a timestamped JSON report, and printed as summary tables.
+    shows a progress bar for the active component. Afterwards the collected
+    metrics are aggregated, scored, written to a timestamped JSON report, and
+    printed as summary tables.
     """
     monitor = SystemMonitor(interval=DEFAULT_MONITOR_INTERVAL)
     monitor.start()

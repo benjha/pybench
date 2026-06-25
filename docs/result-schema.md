@@ -57,7 +57,7 @@ Disusun oleh method `get_hardware_info()` di `reporter/exporter.py`.
 | `os`             | `string`  | selalu   | `"Windows 10"`                         | Nama OS + release via `platform.system()` + `platform.release()`                     |
 | `python_version` | `string`  | selalu   | `"3.11.4"`                             | Versi Python via `platform.python_version()`                                         |
 | `disk_total`     | `string`  | kadang   | `"512.00 GB"`                          | Total kapasitas disk partisi root. Tidak ada jika `psutil.disk_usage()` gagal        |
-| `gpu`            | `string`  | selalu   | `"NVIDIA GeForce RTX 3070"`            | Nama GPU. Urutan deteksi: NVML → OpenCL → WMI → lspci → `"No GPU found"`             |
+| `gpu`            | `string`  | selalu   | `"NVIDIA GeForce RTX 3070"`            | Nama GPU. Urutan deteksi: NVML → CUDA → WMI → lspci → `"No GPU found"`               |
 | `gpu_vram`       | `string`  | kadang   | `"8192.00 MB"`                         | VRAM GPU (hanya ada saat NVML berhasil). Format `"{round(MB,2)} MB"`                 |
 
 ---
@@ -219,15 +219,15 @@ Key dalam objek ini **hanya ada** jika benchmark yang bersangkutan dijalankan (d
 {
   "compute": 850.75,
   "vram_bw": 12000.0,
-  "opencl_ok": true
+  "cuda_ok": true
 }
 ```
 
-| Field       | Type                | Contoh    | Deskripsi                                                                               |
-| ----------- | ------------------- | --------- | --------------------------------------------------------------------------------------- |
-| `compute`   | `float`             | `850.75`  | Throughput komputasi (MOps/s) — kernel OpenCL sqrt+log+sin 1M floats, atau fallback CPU |
-| `vram_bw`   | `float` atau `null` | `12000.0` | Bandwidth VRAM (MB/s). `null` jika OpenCL tidak tersedia/gagal                          |
-| `opencl_ok` | `boolean`           | `true`    | Apakah OpenCL berhasil diinisialisasi                                                   |
+| Field       | Type                | Contoh    | Deskripsi                                                                             |
+| ----------- | ------------------- | --------- | ------------------------------------------------------------------------------------- |
+| `compute`   | `float`             | `850.75`  | Throughput komputasi (MOps/s) — kernel CUDA sqrt+log+sin 1M floats, atau fallback CPU |
+| `vram_bw`   | `float` atau `null` | `12000.0` | Bandwidth VRAM (MB/s). `null` jika CUDA tidak tersedia/gagal                          |
+| `cuda_ok`   | `boolean`           | `true`    | Apakah CUDA berhasil diinisialisasi                                                    |
 
 ---
 
@@ -268,7 +268,7 @@ Dihitung oleh `Scorer.get_full_breakdown()` di `scoring/scorer.py`.
 | `hardware`              | `disk_total`                  | Tidak ada jika `psutil.disk_usage()` gagal                           |
 | `hardware`              | `gpu_vram`                    | Tidak ada jika NVML gagal (tanpa GPU NVIDIA / tanpa `pynvml`)        |
 | `system_monitor`        | `gpu`, `gpu_temp`, `gpu_vram` | Bernilai `null` (bukan tidak ada) saat tanpa sensor GPU              |
-| `benchmark_results.gpu` | `vram_bw`                     | Bernilai `null` saat OpenCL tidak tersedia atau test bandwidth gagal |
+| `benchmark_results.gpu` | `vram_bw`                     | Bernilai `null` saat CUDA tidak tersedia atau test bandwidth gagal   |
 
 ---
 
@@ -355,7 +355,7 @@ run_benchmark_cycle(selections)
     "gpu": {
       "compute": 850.75,
       "vram_bw": 12000.0,
-      "opencl_ok": true
+      "cuda_ok": true
     }
   },
   "scores": {

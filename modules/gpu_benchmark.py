@@ -1,21 +1,23 @@
-"""GPU benchmark suite (OpenCL via PyOpenCL).
+"""GPU benchmark suite (CUDA via CuPy).
 
-Runs two tests on the first available OpenCL device: a compute kernel applying
+Runs two tests on the first available CUDA device: a compute kernel applying
 sqrt/log/sin per element, and a host<->device VRAM bandwidth transfer. If no
-OpenCL platform is available, the compute test transparently falls back to a
-CPU scalar loop and the VRAM test reports ``None``.
+CUDA device is available, the compute test transparently falls back to a CPU
+scalar loop and the VRAM test reports ``None``.
 
-PyOpenCL is imported lazily/guarded so the module still loads (and the rest of
-PyBench runs) on machines without an OpenCL runtime.
+CuPy is imported lazily/guarded so the module still loads (and the rest of
+PyBench runs) on machines without a CUDA runtime. CuPy ships prebuilt wheels
+with the CUDA runtime bundled and JIT-compiles kernels via NVRTC, so no CUDA
+Toolkit / ``nvcc`` install is required — only an NVIDIA driver at runtime.
 """
 import time
 import math
 
 try:
-    import pyopencl as cl
-    HAS_OPENCL = True
+    import cupy as cp
+    HAS_CUPY = True
 except Exception:
-    HAS_OPENCL = False
+    HAS_CUPY = False
 
 # Compute-intensity knob: math iterations per element in the compute kernel.
 # The reported throughput is normalized by this value so the score stays
@@ -30,72 +32,68 @@ class GPUBenchmark:
         duration: Seconds to run each sub-test.
 
     Attributes:
-        opencl_ok: True once an OpenCL context and queue were created.
+        cuda_ok: True once a CUDA device was found and selected via CuPy.
     """
 
     def __init__(self, duration=5):
         self.duration = duration
-        self.opencl_ok = False
-        self.ctx = None
-        self.queue = None
-        self._init_opencl()
+        self.cuda_ok = False
+        self.device = None
+        self._init_cuda()
 
-    def _init_opencl(self):
-        """Create an OpenCL context/queue on the first device; stay silent on failure.
+    def _init_cuda(self):
+        """Select the first CUDA device via CuPy; stay silent on failure.
 
-        Leaves ``opencl_ok`` False if no platform/device is found or setup
-        raises, which triggers the CPU fallback path in the tests.
+        Leaves ``cuda_ok`` False if no device is found or setup raises, which
+        triggers the CPU fallback path in the tests.
         """
-        if not HAS_OPENCL:
+        if not HAS_CUPY:
             return
         try:
-            platforms = cl.get_platforms()
-            if not platforms:
+            if cp.cuda.runtime.getDeviceCount() < 1:
                 return
-            devices = platforms[0].get_devices()
-            if not devices:
-                return
-            self.ctx = cl.Context(devices=[devices[0]])
-            self.queue = cl.CommandQueue(self.ctx)
-            self.opencl_ok = True
+            self.device = cp.cuda.Device(0)
+            self.device.use()
+            self.cuda_ok = True
         except Exception:
             pass
 
-    # ── GPU compute (OpenCL) ──────────────────────────────────────────────────
+    # ── GPU compute (CUDA) ────────────────────────────────────────────────────
 
     def compute(self):
-        """GPU compute throughput in MOps/s (falls back to CPU if no OpenCL).
+        """GPU compute throughput in MOps/s (falls back to CPU if no CUDA).
 
         Builds and dispatches the compute kernel over a large float32 array,
         synchronizing each launch. The result is normalized by the kernel's
         inner-loop count so the figure is independent of the intensity knob.
         """
-        if not self.opencl_ok:
+        if not self.cuda_ok:
             return self._cpu_fallback_compute()
         try:
             import numpy as np
-            import pyopencl.array as cla
             SIZE = 16 * 1024 * 1024
-            src = cla.to_device(
-                self.queue, np.random.rand(SIZE).astype(np.float32))
-            dst = cla.empty_like(src)
-            prog = cl.Program(self.ctx, """
-                __kernel void compute(__global float* src, __global float* dst) {
-                    int i = get_global_id(0);
+            src = cp.random.rand(SIZE, dtype=cp.float32)
+            dst = cp.empty_like(src)
+            kernel = cp.RawKernel(r"""
+                extern "C" __global__
+                void compute(const float* src, float* dst, int n) {
+                    int i = blockIdx.x * blockDim.x + threadIdx.x;
+                    if (i >= n) return;
                     float x = src[i];
                     float acc = 0.0f;
                     for (int k = 0; k < %d; k++) {
-                        acc += sqrt(x) * log(x + 1.0f) * sin(x + k);
+                        acc += sqrtf(x) * logf(x + 1.0f) * sinf(x + k);
                     }
                     dst[i] = acc;
                 }
-            """ % COMPUTE_INNER_ITERS).build()
-            kernel = cl.Kernel(prog, "compute")
+            """ % COMPUTE_INNER_ITERS, "compute")
+            block = 256
+            grid = (SIZE + block - 1) // block
             count = 0
             start = time.perf_counter()
             while time.perf_counter() - start < self.duration:
-                kernel(self.queue, (SIZE,), None, src.data, dst.data)
-                self.queue.finish()
+                kernel((grid,), (block,), (src, dst, np.int32(SIZE)))
+                cp.cuda.runtime.deviceSynchronize()
                 count += 1
             elapsed = time.perf_counter() - start
             # Normalize by the inner-loop count so the reported throughput is
@@ -120,47 +118,45 @@ class GPUBenchmark:
     # ── VRAM bandwidth ────────────────────────────────────────────────────────
 
     def vram_bandwidth(self):
-        """Host->device->host transfer bandwidth in MB/s, or None without OpenCL.
+        """Host->device->host transfer bandwidth in MB/s, or None without CUDA.
 
         Repeatedly uploads a NumPy array to a device buffer and copies it back,
         measuring effective PCIe/VRAM throughput.
         """
-        if not self.opencl_ok:
+        if not self.cuda_ok:
             return None          # ← None, not 0
         try:
             import numpy as np
             SIZE = 256 * 1024 * 1024  # 256 MB
             data = np.random.rand(SIZE // 4).astype(np.float32)
+            out = np.empty_like(data)
+            d_buf = cp.empty(data.shape, dtype=cp.float32)
             total = 0
             start = time.perf_counter()
             while time.perf_counter() - start < self.duration:
-                buf = cl.Buffer(self.ctx, cl.mem_flags.READ_ONLY | cl.mem_flags.COPY_HOST_PTR,
-                                hostbuf=data)
-                out = np.empty_like(data)
-                cl.enqueue_copy(self.queue, out, buf)
-                self.queue.finish()
+                d_buf.set(data)        # host -> device
+                d_buf.get(out=out)     # device -> host
+                cp.cuda.runtime.deviceSynchronize()
                 total += SIZE
-                del buf
             elapsed = time.perf_counter() - start
             return (total / elapsed) / (1024 ** 2) if elapsed > 1e-6 else None
         except Exception:
             return None
 
     def run_all(self, verbose=False):
-        """Run the GPU sub-tests and return results, including the OpenCL status."""
+        """Run the GPU sub-tests and return results, including the CUDA status."""
         results = {}
-        if not self.opencl_ok:
+        if not self.cuda_ok:
             if verbose:
                 print(
-                    "  [WARNING] OpenCL not found or initialization failed. Using CPU fallback for GPU tests.")
-            pass
+                    "  [WARNING] CUDA not found or initialization failed. Using CPU fallback for GPU tests.")
         if verbose:
             print("  Running GPU Compute test...")
         results["compute"] = self.compute()
         if verbose:
             print("  Running VRAM Bandwidth test...")
         results["vram_bw"] = self.vram_bandwidth()   # may be None
-        results["opencl_ok"] = self.opencl_ok
+        results["cuda_ok"] = self.cuda_ok
         if verbose:
             print("  " + "="*50)
         return results

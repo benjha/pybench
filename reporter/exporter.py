@@ -2,8 +2,8 @@
 
 ``Exporter`` gathers a hardware profile (CPU, RAM, disk, OS, GPU) and writes a
 timestamped JSON report combining that profile with the benchmark results,
-monitor summary, and scores. GPU detection cascades through NVML, OpenCL, and
-OS-specific fallbacks. Optional dependencies (NVML, OpenCL) are guarded so the
+monitor summary, and scores. GPU detection cascades through NVML, CUDA, and
+OS-specific fallbacks. Optional dependencies (NVML, CUDA) are guarded so the
 exporter works without them.
 """
 import json
@@ -17,10 +17,10 @@ try:
 except Exception:
     HAS_NVML = False
 try:
-    import pyopencl as cl
-    HAS_OPENCL = True
+    import cupy as cp
+    HAS_CUDA = True
 except Exception:
-    HAS_OPENCL = False
+    HAS_CUDA = False
 
 
 class Exporter:
@@ -36,7 +36,7 @@ class Exporter:
 
         Each probe is wrapped in try/except so a single failing detector never
         aborts the report. GPU name is resolved by trying, in order: NVML
-        (NVIDIA), OpenCL devices, Windows WMI, then Linux ``lspci``.
+        (NVIDIA), CUDA devices, Windows WMI, then Linux ``lspci``.
         """
         info = {}
         try:
@@ -80,15 +80,15 @@ class Exporter:
             except Exception:
                 pass
 
-        # 2. Try OpenCL (for Intel, AMD, Apple, etc.)
-        if info['gpu'] == "No GPU found" and HAS_OPENCL:
+        # 2. Try CUDA via CuPy (NVIDIA devices, when NVML is unavailable)
+        if info['gpu'] == "No GPU found" and HAS_CUDA:
             try:
-                platforms = cl.get_platforms()
                 gpu_names = []
-                for p in platforms:
-                    devs = p.get_devices(device_type=cl.device_type.GPU)
-                    for d in devs:
-                        gpu_names.append(d.name.strip())
+                for i in range(cp.cuda.runtime.getDeviceCount()):
+                    name = cp.cuda.runtime.getDeviceProperties(i)["name"]
+                    if isinstance(name, bytes):
+                        name = name.decode("utf-8")
+                    gpu_names.append(name.strip())
                 if gpu_names:
                     info['gpu'] = " / ".join(list(set(gpu_names)))
             except Exception:

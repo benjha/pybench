@@ -8,13 +8,13 @@
 ![Status](https://img.shields.io/badge/Status-Active-success?style=flat-square)
 
 > A cross-platform, terminal-based hardware benchmark tool written in Python.  
-> Measures CPU, Memory, Disk, and GPU performance — with real-time system monitoring and structured JSON export.
+> Measures CPU, Memory, Disk, and GPU performance — with background hardware monitoring and structured JSON export.
 
 ---
 
 ## Overview
 
-PyBench is a lightweight benchmark suite designed to stress-test and profile hardware components using pure Python and OpenCL. It provides reproducible, comparable results across machines with a clean terminal UI powered by [Rich](https://github.com/Textualize/rich).
+PyBench is a lightweight benchmark suite designed to stress-test and profile hardware components using pure Python and CUDA. It provides reproducible, comparable results across machines with a clean terminal UI powered by [Rich](https://github.com/Textualize/rich).
 
 ---
 
@@ -25,8 +25,8 @@ PyBench is a lightweight benchmark suite designed to stress-test and profile har
 | **CPU**     | Single-thread math, multi-thread parallel, zlib compression, PBKDF2 encryption, prime sieve                         |
 | **Memory**  | Sequential bandwidth, random access speed, memoryview copy speed, allocation stress                                 |
 | **Disk**    | SEQ1M Q8T1 read/write, RND4K Q32T1 read/write, total IOPS                                                           |
-| **GPU**     | OpenCL compute kernel (sqrt · log · sin), host↔device memory bandwidth                                              |
-| **Monitor** | Real-time CPU %, frequency, RAM usage, GPU %, temperature, VRAM, disk I/O, network — with Avg / Min / Max / Std Dev |
+| **GPU**     | CUDA compute kernel (sqrt · log · sin), host↔device memory bandwidth                                                |
+| **Monitor** | Background sampling of CPU %, frequency, RAM, GPU %, temperature, VRAM, disk I/O, network — summarized as Avg / Min / Max / Std Dev |
 | **Scoring** | Weighted score per module + overall composite score                                                                 |
 | **Export**  | Full results saved as structured JSON with timestamp-based run ID                                                   |
 
@@ -116,7 +116,7 @@ pybench/
 │   ├── cpu_benchmark.py     # Single/multi-thread, compression, encryption, prime sieve
 │   ├── memory_benchmark.py  # Bandwidth, latency, copy speed, allocation
 │   ├── disk_benchmark.py    # Sequential & random I/O, IOPS
-│   └── gpu_benchmark.py     # OpenCL compute kernel + VRAM bandwidth
+│   └── gpu_benchmark.py     # CUDA compute kernel + VRAM bandwidth
 │
 ├── monitor/
 │   ├── system_monitor.py    # Background thread — polls psutil & nvidia-smi every 0.5s
@@ -129,7 +129,7 @@ pybench/
 │   └── exporter.py          # Serializes results to timestamped JSON
 │
 ├── ui/
-│   ├── dashboard.py         # Live stats panel (Rich Live)
+│   ├── dashboard.py         # Live stats panel (Rich Live) — currently unused
 │   ├── formatter.py         # Welcome screen & log helpers
 │   └── results_view.py      # Final results table renderer
 │
@@ -159,11 +159,11 @@ uv run python main.py
 
 *(Alternatively, you can use standard Python: `python -m venv .venv` and `pip install -r requirements.txt`)*
 
-> **Note — OpenCL:** GPU benchmarking requires OpenCL drivers.
+> **Note — CUDA:** GPU benchmarking requires an NVIDIA GPU and driver. It uses **CuPy**, whose prebuilt wheels bundle the CUDA runtime — no CUDA Toolkit / `nvcc` install needed.
 >
-> - NVIDIA: install CUDA Toolkit
-> - Intel / AMD integrated: install the vendor's OpenCL runtime
-> - If OpenCL is unavailable, the GPU compute test falls back to a CPU scalar implementation automatically.
+> - Install the CuPy wheel matching your driver's CUDA version: `cupy-cuda12x` (CUDA 12.x, the default here) or `cupy-cuda11x` (CUDA 11.x).
+> - Kernels are JIT-compiled at runtime via NVRTC, which ships inside the CuPy wheel.
+> - If CUDA is unavailable, the GPU compute test falls back to a CPU scalar implementation automatically.
 
 ---
 
@@ -298,29 +298,32 @@ f.write(data)   # or f.read(block_size)
 
 ### GPU
 
-Uses **PyOpenCL** to execute compute workloads on the GPU. If no OpenCL platform is detected, the compute test falls back to a CPU scalar loop automatically — `vram_bw` returns `null` in that case.
+Uses **CuPy** to execute compute workloads on the GPU. If no CUDA device is detected, the compute test falls back to a CPU scalar loop automatically — `vram_bw` returns `null` in that case.
 
-**GPU Compute** — Compiles and dispatches an OpenCL C kernel on-the-fly over a **16M-element** `float32` array in parallel across all GPU compute units. Each work-item runs an inner loop (`COMPUTE_INNER_ITERS`, default **256**) of `sqrt · log · sin` to raise arithmetic intensity and saturate the cores rather than being purely memory-bound. The kernel is retrieved once (via `cl.Kernel`) and reused across launches to avoid per-iteration overhead. Result is reported in **MOps/s**, normalized by the inner-loop count so the figure is invariant to the intensity setting.
+**GPU Compute** — Compiles and dispatches a CUDA C kernel on-the-fly (via `cupy.RawKernel`, JIT-compiled with NVRTC) over a **16M-element** `float32` array in parallel across all GPU cores. Each thread runs an inner loop (`COMPUTE_INNER_ITERS`, default **256**) of `sqrt · log · sin` to raise arithmetic intensity and saturate the cores rather than being purely memory-bound. The kernel is compiled once and reused across launches to avoid per-iteration overhead. Result is reported in **MOps/s**, normalized by the inner-loop count so the figure is invariant to the intensity setting.
 
 ```c
-__kernel void compute(__global float* src, __global float* dst) {
-    int i = get_global_id(0);
+__global__ void compute(const float* src, float* dst, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
     float x = src[i];
     float acc = 0.0f;
     for (int k = 0; k < COMPUTE_INNER_ITERS; k++) {
-        acc += sqrt(x) * log(x + 1.0f) * sin(x + k);
+        acc += sqrtf(x) * logf(x + 1.0f) * sinf(x + k);
     }
     dst[i] = acc;
 }
 ```
 
-**VRAM Bandwidth** — Repeatedly transfers a 256 MB `float32` NumPy array from host RAM to device VRAM (`cl.Buffer` with `COPY_HOST_PTR`) and back (`cl.enqueue_copy`). Measures PCIe bus throughput and VRAM read/write speed in MB/s.
+**VRAM Bandwidth** — Repeatedly transfers a 256 MB `float32` NumPy array from host RAM to device VRAM (`cupy.ndarray.set`) and back (`cupy.ndarray.get`). Measures PCIe bus throughput and VRAM read/write speed in MB/s.
 
 ---
 
 ### System Monitor
 
 A background daemon thread polls system state every `0.5s` for the entire duration of the benchmark run using `psutil`, `nvidia-smi` (via subprocess), and WMI fallbacks. Raw samples are collected into lists and aggregated into **Avg / Min / Max / Std Dev** by `monitor/aggregator.py` after the run completes. Monitored metrics include: CPU usage %, CPU frequency, RAM usage, GPU usage %, GPU temperature, VRAM used, disk I/O speed, and network throughput.
+
+> Monitoring runs in the background and is reported in the post-run **Hardware Monitoring Summary** table. The live per-component panel (`ui/dashboard.py`) is currently disabled — only the progress bars are shown while benchmarks run.
 
 ---
 
@@ -398,7 +401,7 @@ Each run produces a JSON file in `results/` with the following structure:
       "rand_read": 75401.3,
       "iops": 145589.76
     },
-    "gpu": { "compute": 3545.31, "vram_bw": 1216.46, "opencl_ok": true }
+    "gpu": { "compute": 3545.31, "vram_bw": 1216.46, "cuda_ok": true }
   },
   "scores": {
     "cpu": 218741,
@@ -416,11 +419,11 @@ Each run produces a JSON file in `results/` with the following structure:
 
 | Package        | Purpose                                          |
 | -------------- | ------------------------------------------------ |
-| `rich`         | Terminal UI — progress bars, live panels, tables |
+| `rich`         | Terminal UI — progress bars and result tables    |
 | `psutil`       | CPU, RAM, and disk metrics                       |
 | `nvidia-ml-py` | Hardware identification (NVML) in exporter.py    |
 | `py-cpuinfo`   | Detailed CPU model information                   |
-| `pyopencl`     | GPU compute kernel execution                     |
+| `cupy-cuda12x` | GPU compute kernel execution (CUDA via CuPy)     |
 | `numpy`        | Array operations for GPU benchmark               |
 
 ---
@@ -428,7 +431,7 @@ Each run produces a JSON file in `results/` with the following structure:
 ## Limitations
 
 - **CPU temperature** requires platform-specific drivers (e.g., OpenHardwareMonitor on Windows, `lm-sensors` on Linux). PyBench reports `null` if unavailable.
-- **GPU monitoring** via `nvidia-smi` only supports NVIDIA GPUs. Intel/AMD integrated graphics are not monitored via this method (though hardware info might still be detected via OpenCL), and temperature/usage stats may fall back to WMI on Windows if `nvidia-smi` is unavailable.
+- **GPU benchmarking & monitoring** target NVIDIA GPUs (CUDA / `nvidia-smi`). Intel/AMD integrated graphics are not supported by the CUDA compute test (it falls back to the CPU), are not monitored via `nvidia-smi`, and temperature/usage stats may fall back to WMI on Windows if `nvidia-smi` is unavailable.
 - **Disk benchmark** creates a temporary file (1 GB by default, or ≈1.5× RAM with `exceed_ram=True`). Ensure the target directory has sufficient free space.
 - **Multi-core CPU test** uses `ProcessPoolExecutor` to escape the GIL, so it reflects genuine parallel throughput across cores. The single-thread, compression, encryption, and prime tests still run pure-Python workloads, so absolute numbers reflect interpreter-level performance — consistent and comparable across machines on the same Python version, but not directly comparable to native-compiled tools.
 - **Multiprocessing** requires the program to be launched via `python main.py` (the entry point is guarded by `if __name__ == "__main__"`), which is necessary for the "spawn" start method on Windows/macOS.
