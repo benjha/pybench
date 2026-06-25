@@ -1,3 +1,12 @@
+"""Background system telemetry sampler.
+
+``SystemMonitor`` is a daemon thread that polls hardware metrics (CPU, RAM,
+GPU, disk, network) at a fixed interval while benchmarks run, storing a
+timestamped snapshot per sample. Disk and network figures are computed as
+deltas between samples to yield per-second rates. CPU temperature and GPU
+stats are gathered via several platform-specific fallbacks and degrade
+gracefully to 0/None when no sensor is available.
+"""
 import time
 import threading
 import psutil
@@ -7,6 +16,12 @@ import re
 
 
 class SystemMonitor(threading.Thread):
+    """Daemon thread that samples system metrics into ``self.metrics``.
+
+    Args:
+        interval: Seconds between samples.
+    """
+
     def __init__(self, interval=1.0):
         super().__init__()
         self.interval = interval
@@ -16,7 +31,12 @@ class SystemMonitor(threading.Thread):
 
     @staticmethod
     def _get_cpu_temp():
-        """Return CPU temperature in °C, or 0 if unavailable."""
+        """Return CPU temperature in °C, or 0 if unavailable.
+
+        Tries, in order: psutil sensors, Linux thermal-zone sysfs files, the
+        ``sensors`` CLI, then Windows WMI (OpenHardwareMonitor, then the
+        generic thermal-zone counter). Each source is best-effort.
+        """
         try:
             temps = psutil.sensors_temperatures()
             for key in ("coretemp", "k10temp", "cpu_thermal", "acpitz", "zenpower"):
@@ -73,7 +93,11 @@ class SystemMonitor(threading.Thread):
 
     @staticmethod
     def _get_gpu_stats():
-        """Return (usage%, temp°C, vram_mb) or (None, None, None)."""
+        """Return (usage%, temp°C, vram_mb), or (None, None, None) if no GPU.
+
+        Prefers ``nvidia-smi``; on Windows falls back to OpenHardwareMonitor
+        via WMI. Non-NVIDIA GPUs without those sensors return all-None.
+        """
         try:
             out = subprocess.check_output(
                 ["nvidia-smi",
@@ -107,9 +131,15 @@ class SystemMonitor(threading.Thread):
         return None, None, None
 
     def stop(self):
+        """Signal the sampling loop to exit after its current iteration."""
         self._stop_event.set()
 
     def run(self):
+        """Sampling loop: snapshot metrics every ``interval`` until stopped.
+
+        Disk and network throughput are derived from the byte-counter delta
+        since the previous sample divided by the elapsed time.
+        """
         last_net = psutil.net_io_counters()
         last_disk = psutil.disk_io_counters()
         last_time = time.time()
@@ -188,7 +218,9 @@ class SystemMonitor(threading.Thread):
             time.sleep(self.interval)
 
     def get_latest_snapshot(self):
+        """Return the most recent sample dict, or None if none collected yet."""
         return self.metrics[-1] if self.metrics else None
 
     def get_metrics(self):
+        """Return the full list of collected per-sample snapshots."""
         return self.metrics

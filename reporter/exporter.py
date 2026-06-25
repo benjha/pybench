@@ -1,3 +1,11 @@
+"""Hardware detection and JSON report export.
+
+``Exporter`` gathers a hardware profile (CPU, RAM, disk, OS, GPU) and writes a
+timestamped JSON report combining that profile with the benchmark results,
+monitor summary, and scores. GPU detection cascades through NVML, OpenCL, and
+OS-specific fallbacks. Optional dependencies (NVML, OpenCL) are guarded so the
+exporter works without them.
+"""
 import json
 import os
 import time
@@ -16,12 +24,20 @@ except Exception:
 
 
 class Exporter:
+    """Writes benchmark reports to a JSON file in ``output_dir``."""
+
     def __init__(self, output_dir="results"):
         self.output_dir = output_dir
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
     def get_hardware_info(self):
+        """Collect a best-effort hardware/OS profile as a flat dict.
+
+        Each probe is wrapped in try/except so a single failing detector never
+        aborts the report. GPU name is resolved by trying, in order: NVML
+        (NVIDIA), OpenCL devices, Windows WMI, then Linux ``lspci``.
+        """
         info = {}
         try:
             c = cpuinfo.get_cpu_info()
@@ -112,6 +128,13 @@ class Exporter:
         return info
 
     def export(self, results, system_monitor_data, scores):
+        """Write a timestamped JSON report and return its file path.
+
+        Args:
+            results: Raw per-module benchmark results.
+            system_monitor_data: Aggregated monitor statistics.
+            scores: Per-module and overall scores.
+        """
         run_id = time.strftime("%Y%m%d_%H%M%S")
         filename = f"run_{run_id}.json"
         filepath = os.path.join(self.output_dir, filename)

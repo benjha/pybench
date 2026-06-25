@@ -1,12 +1,21 @@
+"""Live real-time monitoring panel for the benchmark run."""
 from rich.panel import Panel
 
 
 class StatsDisplay:
+    """Rich-renderable panel showing live stats for the active component.
+
+    Set ``active_component`` (e.g. "CPU", "MEMORY", "DISK", "GPU") to control
+    which metrics are shown; Rich re-renders the panel from the monitor's
+    latest snapshot on each refresh.
+    """
+
     def __init__(self, monitor):
         self.monitor = monitor
         self.active_component = "Initializing"
 
     def __rich__(self):
+        """Build the panel for the current component from the latest snapshot."""
         snapshot = self.monitor.get_latest_snapshot()
         if not snapshot:
             return Panel("Initializing sensors...", title="System Stats", border_style="dim")

@@ -1,3 +1,4 @@
+"""Final results rendering: detail, score, and monitoring summary tables."""
 from rich.table import Table
 from rich.console import Console
 from ui.formatter import mb_format
@@ -6,6 +7,18 @@ console = Console()
 
 
 def display_results(results, scores, metrics, report_path):
+    """Print the three summary tables and the saved report path.
+
+    Renders raw per-test results, the score summary, and the hardware
+    monitoring summary. Only sections present in ``results``/``metrics`` are
+    shown, so partial runs display cleanly.
+
+    Args:
+        results: Raw per-module benchmark results.
+        scores: Per-module and overall scores.
+        metrics: Aggregated monitor statistics.
+        report_path: Path to the exported JSON report.
+    """
     console.print(
         "\n[bold green]Benchmark Completed Successfully![/bold green]")
 

@@ -1,3 +1,14 @@
+"""Memory (RAM) benchmark suite.
+
+Measures four aspects of the memory subsystem: bulk sequential bandwidth,
+random-access latency (via pointer chasing), low-overhead copy speed, and
+allocator throughput under churn. Bandwidth/latency metrics are inherently
+rates (MB/s, GB/s, reads/s) and so are intensity-invariant; the allocation
+metric is normalized to a baseline block size.
+
+Note: results reflect Python-level memory operations, not the theoretical
+hardware peak, but are consistent and comparable across runs.
+"""
 import time
 import os
 import gc
@@ -10,6 +21,17 @@ BASE_ALLOC_SIZE = 1024 * 1024
 
 
 class MemoryBenchmark:
+    """Runs the memory test battery.
+
+    Args:
+        duration: Seconds to run each sub-test.
+        seq_buf_size: Buffer size for the sequential bandwidth test.
+        rand_buf_size: Index-table size for the random-latency test; choose
+            larger than the last-level cache so loads reach main memory.
+        copy_chunk: Bytes copied per ``memoryview`` copy iteration.
+        alloc_size: Bytes allocated/freed per allocation-stress cycle.
+    """
+
     def __init__(self, duration=5, seq_buf_size=512 * 1024 * 1024,
                  rand_buf_size=256 * 1024 * 1024,
                  copy_chunk=256 * 1024 * 1024,
@@ -25,7 +47,7 @@ class MemoryBenchmark:
     # ── Sequential bandwidth ──────────────────────────────────────────────────
 
     def seq_bandwidth(self):
-        """MB/s of raw memory read/write using bytearray copies."""
+        """Return sequential read+write bandwidth in MB/s via bytearray copies."""
         BUF_SIZE = self.seq_buf_size
         buf = bytearray(os.urandom(BUF_SIZE))
         total_bytes = 0
@@ -83,7 +105,7 @@ class MemoryBenchmark:
     # ── Memory copy speed ─────────────────────────────────────────────────────
 
     def copy_speed(self):
-        """GB/s of memoryview-based copy."""
+        """Return memory copy throughput in GB/s using zero-overhead memoryviews."""
         CHUNK = self.copy_chunk
         src = bytearray(CHUNK)
         dst = bytearray(CHUNK)
@@ -100,7 +122,11 @@ class MemoryBenchmark:
     # ── Allocation stress ─────────────────────────────────────────────────────
 
     def alloc_stress(self):
-        """Alloc+free cycles per second."""
+        """Return alloc+free cycles per second (baseline-normalized).
+
+        Stresses the Python allocator and OS memory manager by repeatedly
+        creating and discarding a ``bytearray``, with a final ``gc.collect()``.
+        """
         count = 0
         start = time.perf_counter()
         while time.perf_counter() - start < self.duration:
@@ -113,6 +139,7 @@ class MemoryBenchmark:
         return (count * self._alloc_factor) / elapsed
 
     def run_all(self, verbose=False):
+        """Run every memory sub-test and return a dict of results."""
         results = {}
         if verbose:
             print("  Running Sequential Bandwidth test...")
@@ -132,6 +159,10 @@ class MemoryBenchmark:
 
     @staticmethod
     def score(results):
+        """Weighted memory score from bandwidth, copy speed, and latency.
+
+        (Mirrors the active scorer in scoring/scorer.py for standalone use.)
+        """
         bw = results.get("seq_bw",   0) or 0
         copy = results.get("copy",     0) or 0
         lat = results.get("rand_lat", 0) or 0

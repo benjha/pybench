@@ -1,11 +1,20 @@
+"""Aggregation of raw monitor samples into summary statistics."""
 import statistics
 
 
 def aggregate_metrics(metrics_list):
+    """Reduce a list of monitor snapshots to per-metric summary stats.
+
+    Extracts each metric's time series from the snapshots produced by
+    ``SystemMonitor`` and computes avg/min/max/std-dev for each. CPU
+    temperature samples of 0 (sensor unavailable) are dropped before
+    aggregation. Returns ``{}`` for empty input.
+    """
     if not metrics_list:
         return {}
 
     def get_stats(data):
+        """Return avg/min/max/std-dev for a numeric series, or None if empty."""
         if not data:
             return None
         return {
@@ -28,9 +37,12 @@ def aggregate_metrics(metrics_list):
     if metrics_list[0]['gpu']:
         num_gpus = len(metrics_list[0]['gpu'])
         for i in range(num_gpus):
-            gpu_usage.extend([m['gpu'][i]['usage'] for m in metrics_list])
-            gpu_temp.extend([m['gpu'][i]['temp'] for m in metrics_list])
-            gpu_vram.extend([m['gpu'][i]['vram_used'] for m in metrics_list])
+            # GPU samples come from per-snapshot nvidia-smi calls that can
+            # intermittently fail/time out, leaving some snapshots with fewer
+            # (or zero) GPU entries. Only read snapshots that have this index.
+            gpu_usage.extend([m['gpu'][i]['usage'] for m in metrics_list if len(m['gpu']) > i])
+            gpu_temp.extend([m['gpu'][i]['temp'] for m in metrics_list if len(m['gpu']) > i])
+            gpu_vram.extend([m['gpu'][i]['vram_used'] for m in metrics_list if len(m['gpu']) > i])
     disk_read = [m['disk']['read_speed'] for m in metrics_list]
     disk_write = [m['disk']['write_speed'] for m in metrics_list]
 

@@ -197,36 +197,40 @@ Results are automatically saved to `results/run_<timestamp>.json`.
 
 All tests use a **time-bounded loop** pattern: each sub-test runs for a fixed duration (`DEFAULT_DURATION`, default **10 seconds**) and scores by counting how many operations were completed — not by measuring how long a fixed task takes.
 
+> **Intensity knobs & normalization.** Most benchmark classes expose constructor parameters that control how much work each unit does (e.g. `math_iters`, `compress_size`, `pbkdf2_iters`, `sieve_n` for CPU; buffer sizes for memory; `file_size`/thread counts for disk; the GPU kernel's inner-loop count). Raising a knob makes each iteration heavier, which lowers the raw completion count. To keep results comparable, count-based metrics are **normalized back to a fixed baseline of work-per-iteration**, so changing an intensity knob does not change the reported score on the same hardware. Metrics that are already rates (MB/s, GB/s, IOPS) are inherently intensity-invariant.
+
 ---
 
 
 
 ### CPU
 
-Focuses on raw processor throughput across floating-point math, cryptography, compression, and parallel workloads.
+Focuses on raw processor throughput across floating-point math, cryptography, compression, and parallel workloads. Each metric is normalized to a baseline work unit (see note above) so intensity settings don't skew scores.
 
-**Single-thread** — Measures pure single-core performance by repeatedly executing a 500-iteration FPU-heavy loop (`sqrt · log · sin`). Stresses the Floating Point Unit (FPU) without any parallelism.
+**Single-thread** — Measures pure single-core performance by repeatedly executing an FPU-heavy loop (`sqrt · log · sin`) of length `math_iters` (default **5,000**). Stresses the Floating Point Unit (FPU) without any parallelism.
 
 ```python
-def workload():
+def _math_workload(iterations):
     x = 0.0
-    for i in range(1, 500):
+    for i in range(1, iterations):
         x += math.sqrt(i) * math.log(i + 1) * math.sin(i)
+    return x
 ```
 
-**Multi-thread** — Dispatches the same workload across all available logical cores via `ThreadPoolExecutor`. Scores are the sum of all thread completions, reflecting total parallel throughput.
+**Multi-thread** — Dispatches the same workload across all logical cores via **`ProcessPoolExecutor`**. Using separate processes (not threads) sidesteps the GIL, so the work runs truly in parallel. The score is the sum of all worker completions, reflecting total multi-core throughput.
 
 ```python
-with ThreadPoolExecutor(max_workers=cores) as ex:
-    futures = [ex.submit(self._run_timed, workload) for _ in range(cores)]
+with ProcessPoolExecutor(max_workers=cores) as ex:
+    futures = [ex.submit(_math_worker, self.duration, self.math_iters)
+               for _ in range(cores)]
     total = sum(f.result() for f in futures)
 ```
 
-**Compression** — Repeatedly compresses a 64 KB random buffer with `zlib` at level 6. Stresses integer instruction throughput and memory manipulation.
+**Compression** — Repeatedly compresses a random buffer (`compress_size`, default **256 KB**) with `zlib` at level 6. Random data is near-incompressible, so this stresses the integer pipeline and memory manipulation.
 
-**Encryption** — Runs `hashlib.pbkdf2_hmac(sha256)` on 64 KB data per iteration. Simulates cryptographic workloads found in real-world security applications.
+**Encryption** — Runs `hashlib.pbkdf2_hmac(sha256)` with a configurable round count (`pbkdf2_iters`, default **1,000**) over a small fixed-size input. PBKDF2 pre-hashes its input once and then cost scales linearly with the iteration count, so iterations are used as the single intensity knob — making the metric cleanly normalizable.
 
-**Prime Sieve** — Implements the Sieve of Eratosthenes up to n = 100,000 using a `bytearray`. Tests CPU branching logic and array traversal patterns.
+**Prime Sieve** — Implements the Sieve of Eratosthenes up to `sieve_n` (default **1,000,000**) using a `bytearray`. Tests CPU branching logic and array traversal patterns.
 
 ```python
 def sieve(n):
@@ -243,38 +247,45 @@ def sieve(n):
 
 Focuses on RAM throughput and latency — how fast the system can move large blocks of data and how quickly it responds to non-sequential access patterns.
 
-**Sequential Bandwidth** — Allocates a 128 MB `bytearray`, copies it into a new buffer (write pass), then performs a single read. Measures raw bulk transfer speed in MB/s.
+**Sequential Bandwidth** — Allocates a large `bytearray` (`seq_buf_size`, default **512 MB**), copies it into a new buffer (write pass), then performs a read. Measures raw bulk transfer speed in MB/s.
 
 ```python
-BUF_SIZE = 128 * 1024 * 1024
+BUF_SIZE = self.seq_buf_size
 buf2 = bytearray(BUF_SIZE)
 buf2[:] = buf        # write pass
 _ = buf2[0]          # read pass
 total_bytes += BUF_SIZE * 2
 ```
 
-**Random Access Speed** — Populates a 64 MB in-memory list of floats, then performs random index reads. Simulates cache miss pressure since accesses do not follow a predictable pattern. Result reported in IOPS.
+**Random Access Speed** — Builds an index table sized to exceed the CPU cache (`rand_buf_size`, default **256 MB**) and performs **pointer chasing** — each read's value selects the next index — so the CPU cannot trivially prefetch and the loads actually reach main memory. The table is filled with a large prime stride (cheap O(n) build) to scatter accesses across pages. Result reported as dependent reads/s (IOPS).
 
-**Copy Speed** — Uses Python's `memoryview` to copy a 256 MB buffer directly at the memory level, minimizing Python object overhead. Reported in GB/s.
+```python
+# next index = current slot's value → defeats prefetching
+idx = buf[idx]
+```
+
+**Copy Speed** — Uses Python's `memoryview` to copy a large buffer (`copy_chunk`, default **256 MB**) directly at the memory level, minimizing Python object overhead. Reported in GB/s.
 
 ```python
 mv_dst[:] = mv_src   # low-level bulk copy via memoryview
 ```
 
-**Allocation Stress** — Continuously allocates and discards 1 MB `bytearray` objects, then forces a `gc.collect()`. Tests OS memory management and the Python garbage collector under sustained pressure.
+**Allocation Stress** — Continuously allocates and discards `bytearray` objects (`alloc_size`, default **1 MB**), then forces a `gc.collect()`. Tests OS memory management and the Python garbage collector under sustained pressure. Normalized to the baseline block size.
 
 ---
 
 ### Disk
 
-Modeled after the **CrystalDiskMark** methodology. A 1 GB temporary file (`CDM_test.tmp`) is created before testing and deleted automatically on completion.
+Modeled after the **CrystalDiskMark** methodology. A temporary file (`CDM_test.tmp`, `file_size` default **1 GB**) is created before testing and deleted automatically on completion. Block sizes, queue depth (thread count), and file size are all configurable via the constructor.
 
-| Sub-test        | Block Size | Threads | Use case simulated                               |
-| --------------- | ---------- | ------- | ------------------------------------------------ |
-| **SEQ1M Q8T1**  | 1 MB       | 8       | Large file transfers (video, ISO, game installs) |
-| **RND4K Q32T1** | 4 KB       | 32      | OS boot, app launch, small file I/O (IOPS-bound) |
+| Sub-test        | Block Size       | Threads          | Use case simulated                               |
+| --------------- | ---------------- | ---------------- | ------------------------------------------------ |
+| **SEQ1M Q8T1**  | `seq_block` (1 MB) | `seq_threads` (8)  | Large file transfers (video, ISO, game installs) |
+| **RND4K Q32T1** | `rnd_block` (4 KB) | `rnd_threads` (32) | OS boot, app launch, small file I/O (IOPS-bound) |
 
-Sequential tests move through the file in ordered offsets. Random tests use `random.randint` to seek to arbitrary 4 KB-aligned positions, stressing the drive's IOPS capability. All writes call `os.fsync()` to ensure data is committed to hardware rather than OS cache.
+Sequential tests move through the file in ordered offsets. Random tests use `random.randint` to seek to arbitrary block-aligned positions, stressing the drive's IOPS capability. Queue depth is emulated with a thread pool (file I/O releases the GIL). All writes call `os.fsync()` to ensure data is committed to hardware rather than OS cache.
+
+> **Defeating the page cache.** Because I/O is buffered, reads may be served from the OS page cache rather than the drive. Pass `exceed_ram=True` to grow the test file beyond physical RAM (≈1.5× RAM, detected via `psutil`) so the working set cannot be fully cached and reads measure the real device. Ensure the target directory has enough free space.
 
 ```python
 # RND4K — random sector seek before every operation
@@ -289,12 +300,17 @@ f.write(data)   # or f.read(block_size)
 
 Uses **PyOpenCL** to execute compute workloads on the GPU. If no OpenCL platform is detected, the compute test falls back to a CPU scalar loop automatically — `vram_bw` returns `null` in that case.
 
-**GPU Compute** — Compiles and dispatches an OpenCL C kernel on-the-fly that applies `sqrt · log · sin` to every element of a 1M-element `float32` array in parallel across all GPU compute units. Result is reported in **MOps/s** (million operations per second).
+**GPU Compute** — Compiles and dispatches an OpenCL C kernel on-the-fly over a **16M-element** `float32` array in parallel across all GPU compute units. Each work-item runs an inner loop (`COMPUTE_INNER_ITERS`, default **256**) of `sqrt · log · sin` to raise arithmetic intensity and saturate the cores rather than being purely memory-bound. The kernel is retrieved once (via `cl.Kernel`) and reused across launches to avoid per-iteration overhead. Result is reported in **MOps/s**, normalized by the inner-loop count so the figure is invariant to the intensity setting.
 
 ```c
 __kernel void compute(__global float* src, __global float* dst) {
     int i = get_global_id(0);
-    dst[i] = sqrt(src[i]) * log(src[i] + 1.0f) * sin(src[i]);
+    float x = src[i];
+    float acc = 0.0f;
+    for (int k = 0; k < COMPUTE_INNER_ITERS; k++) {
+        acc += sqrt(x) * log(x + 1.0f) * sin(x + k);
+    }
+    dst[i] = acc;
 }
 ```
 
@@ -310,7 +326,7 @@ A background daemon thread polls system state every `0.5s` for the entire durati
 
 ## Scoring System
 
-Higher score = better performance. Scores are unitless integers calibrated so mid-range hardware scores roughly in the same order of magnitude across modules.
+Higher score = better performance. Scores are unitless integers calibrated so mid-range hardware scores roughly in the same order of magnitude across modules. The formulas are implemented in `scoring/scorer.py` (the active path used by `main.py`); each benchmark class also carries a matching `score()` static method for standalone use.
 
 ```
 CPU Score    = single_ops + (multi_ops × 0.5)
@@ -323,6 +339,10 @@ GPU Score    = (compute_MOps × 5) + (vram_bw_MB × 0.1)
 
 Overall      = average of all modules with score > 0
 ```
+
+Because every count-based metric is normalized to a fixed baseline of work-per-iteration, these scores remain comparable across runs **regardless of the intensity-knob settings** used, as long as `DEFAULT_DURATION` is the same.
+
+> **Note:** `config.py` also defines `SCORING_WEIGHTS`, but the active scorer averages the module scores rather than applying those weights — the constant is retained for reference/future use.
 
 ---
 
@@ -409,9 +429,10 @@ Each run produces a JSON file in `results/` with the following structure:
 
 - **CPU temperature** requires platform-specific drivers (e.g., OpenHardwareMonitor on Windows, `lm-sensors` on Linux). PyBench reports `null` if unavailable.
 - **GPU monitoring** via `nvidia-smi` only supports NVIDIA GPUs. Intel/AMD integrated graphics are not monitored via this method (though hardware info might still be detected via OpenCL), and temperature/usage stats may fall back to WMI on Windows if `nvidia-smi` is unavailable.
-- **Disk benchmark** creates a 1 GB temporary file. Ensure the target directory has sufficient free space.
-- **Python GIL** affects multi-thread CPU scores — results reflect Python-level concurrency, not raw hardware throughput. Results are still consistent and comparable across machines running the same Python version.
-- **Score comparability** is only valid between runs using the same `DEFAULT_DURATION` setting.
+- **Disk benchmark** creates a temporary file (1 GB by default, or ≈1.5× RAM with `exceed_ram=True`). Ensure the target directory has sufficient free space.
+- **Multi-core CPU test** uses `ProcessPoolExecutor` to escape the GIL, so it reflects genuine parallel throughput across cores. The single-thread, compression, encryption, and prime tests still run pure-Python workloads, so absolute numbers reflect interpreter-level performance — consistent and comparable across machines on the same Python version, but not directly comparable to native-compiled tools.
+- **Multiprocessing** requires the program to be launched via `python main.py` (the entry point is guarded by `if __name__ == "__main__"`), which is necessary for the "spawn" start method on Windows/macOS.
+- **Score comparability** is valid between runs using the same `DEFAULT_DURATION`. Intensity-knob changes do **not** affect scores, since count-based metrics are normalized to a fixed baseline.
 
 ---
 
