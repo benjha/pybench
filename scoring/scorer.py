@@ -56,20 +56,19 @@ class Scorer:
         Returns:
             Dict of per-module scores plus an ``overall`` key.
         """
-        cpu = self.calculate_cpu_score(modules_results.get(
-            'cpu', {})) if 'cpu' in modules_results else 0
-        mem = self.calculate_memory_score(modules_results.get(
-            'memory', {})) if 'memory' in modules_results else 0
-        disk = self.calculate_disk_score(modules_results.get(
-            'disk', {})) if 'disk' in modules_results else 0
-        gpu = self.calculate_gpu_score(modules_results.get(
-            'gpu', {})) if 'gpu' in modules_results else 0
+        calculators = {
+            "cpu": self.calculate_cpu_score,
+            "memory": self.calculate_memory_score,
+            "disk": self.calculate_disk_score,
+            "gpu": self.calculate_gpu_score,
+        }
 
+        # Only score modules that actually ran. A skipped module (e.g. GPU on
+        # a GPU-less machine) is omitted entirely rather than reported as 0.
         sub_scores = {
-            "cpu": cpu,
-            "memory": mem,
-            "disk": disk,
-            "gpu": gpu
+            name: calc(modules_results[name])
+            for name, calc in calculators.items()
+            if name in modules_results and not modules_results[name].get("skipped")
         }
 
         overall = self.calculate_overall(

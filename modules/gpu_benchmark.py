@@ -1,9 +1,11 @@
 """GPU benchmark suite (CUDA via CuPy).
 
 Runs two tests on the first available CUDA device: a compute kernel applying
-sqrt/log/sin per element, and a host<->device VRAM bandwidth transfer. If no
-CUDA device is available, the compute test transparently falls back to a CPU
-scalar loop and the VRAM test reports ``None``.
+sqrt/log/sin per element, and a host<->device VRAM bandwidth transfer.
+
+If no CUDA GPU is detected, the GPU benchmark is **skipped entirely** — call
+``is_available()`` to check beforehand, or ``run_all()`` which returns a
+``{"skipped": True}`` marker instead of running anything.
 
 CuPy is imported lazily/guarded so the module still loads (and the rest of
 PyBench runs) on machines without a CUDA runtime. CuPy ships prebuilt wheels
@@ -11,7 +13,6 @@ with the CUDA runtime bundled and JIT-compiles kernels via NVRTC, so no CUDA
 Toolkit / ``nvcc`` install is required — only an NVIDIA driver at runtime.
 """
 import time
-import math
 
 try:
     import cupy as cp
@@ -44,8 +45,8 @@ class GPUBenchmark:
     def _init_cuda(self):
         """Select the first CUDA device via CuPy; stay silent on failure.
 
-        Leaves ``cuda_ok`` False if no device is found or setup raises, which
-        triggers the CPU fallback path in the tests.
+        Leaves ``cuda_ok`` False if no device is found or setup raises, in
+        which case the GPU benchmark is skipped.
         """
         if not HAS_CUPY:
             return
@@ -58,17 +59,21 @@ class GPUBenchmark:
         except Exception:
             pass
 
+    def is_available(self):
+        """Return True if a usable CUDA GPU was detected and selected."""
+        return self.cuda_ok
+
     # ── GPU compute (CUDA) ────────────────────────────────────────────────────
 
     def compute(self):
-        """GPU compute throughput in MOps/s (falls back to CPU if no CUDA).
+        """GPU compute throughput in MOps/s, or None if no CUDA GPU.
 
         Builds and dispatches the compute kernel over a large float32 array,
         synchronizing each launch. The result is normalized by the kernel's
         inner-loop count so the figure is independent of the intensity knob.
         """
         if not self.cuda_ok:
-            return self._cpu_fallback_compute()
+            return None
         try:
             import numpy as np
             SIZE = 16 * 1024 * 1024
@@ -101,19 +106,7 @@ class GPUBenchmark:
             # single-op-per-element scale when COMPUTE_INNER_ITERS == 1).
             return (count * SIZE * COMPUTE_INNER_ITERS) / elapsed / 1e6
         except Exception:
-            return self._cpu_fallback_compute()
-
-    def _cpu_fallback_compute(self):
-        """Scalar math fallback when no GPU is available."""
-        SIZE = 10_000
-        count = 0
-        start = time.perf_counter()
-        while time.perf_counter() - start < self.duration:
-            for i in range(1, SIZE):
-                _ = math.sqrt(i) * math.log(i + 1) * math.sin(i)
-            count += 1
-        elapsed = time.perf_counter() - start
-        return (count * SIZE) / elapsed / 1e6
+            return None
 
     # ── VRAM bandwidth ────────────────────────────────────────────────────────
 
@@ -144,12 +137,17 @@ class GPUBenchmark:
             return None
 
     def run_all(self, verbose=False):
-        """Run the GPU sub-tests and return results, including the CUDA status."""
-        results = {}
+        """Run the GPU sub-tests, or skip them entirely if no GPU is present.
+
+        Returns ``{"cuda_ok": False, "skipped": True}`` on a GPU-less machine
+        so callers can omit the GPU module from scoring/output.
+        """
         if not self.cuda_ok:
             if verbose:
-                print(
-                    "  [WARNING] CUDA not found or initialization failed. Using CPU fallback for GPU tests.")
+                print("  [SKIP] No CUDA GPU detected — skipping GPU benchmark.")
+            return {"cuda_ok": False, "skipped": True}
+
+        results = {}
         if verbose:
             print("  Running GPU Compute test...")
         results["compute"] = self.compute()

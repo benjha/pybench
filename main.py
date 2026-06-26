@@ -65,11 +65,17 @@ def run_benchmark_cycle():
         results['disk'] = disk_bench.run_all(verbose=VERBOSE)
         progress.update(task, completed=100)
 
-        task = progress.add_task(
-            "[green]Running GPU Benchmark...", total=100)
         gpu_bench = GPUBenchmark(duration=DEFAULT_DURATION)
-        results['gpu'] = gpu_bench.run_all(verbose=VERBOSE)
-        progress.update(task, completed=100)
+        if gpu_bench.is_available():
+            task = progress.add_task(
+                "[green]Running GPU Benchmark...", total=100)
+            results['gpu'] = gpu_bench.run_all(verbose=VERBOSE)
+            progress.update(task, completed=100)
+        else:
+            # No GPU on this machine — skip the GPU benchmark entirely.
+            task = progress.add_task(
+                "[dim]GPU Benchmark skipped (no GPU detected)", total=100)
+            progress.update(task, completed=100)
 
     # Process results
     scorer = Scorer()
