@@ -11,6 +11,11 @@ dependencies = [
     "psutil>=5.9.0",
     "py-cpuinfo>=9.0.0",
     "cupy-cuda12x>=13.0.0",
+    # Only the CUDA components the benchmark actually uses, instead of the
+    # full cupy [ctk] bundle: nvrtc (JIT-compiles the RawKernel), cudart
+    # (runtime + the headers NVRTC needs), and curand (cp.random.rand). This
+    # omits cuBLAS/cuFFT/cuSOLVER/cuSPARSE/nvJitLink, which are never called.
+    "cuda-toolkit[cudart,curand,nvrtc]>=12.0",
     "rich>=13.0.0",
     "setuptools>=82.0.1",
 ]

@@ -159,11 +159,11 @@ uv run python main.py
 
 *(Alternatively, you can use standard Python: `python -m venv .venv` and `pip install -r requirements.txt`)*
 
-> **Note — CUDA:** GPU benchmarking requires an NVIDIA GPU and driver. It uses **CuPy**, whose prebuilt wheels bundle the CUDA runtime — no CUDA Toolkit / `nvcc` install needed.
+> **Note — CUDA:** GPU benchmarking requires an NVIDIA GPU and driver. It uses **CuPy**, whose prebuilt wheels bundle the CUDA runtime — no system CUDA Toolkit / `nvcc` install needed.
 >
-> - Install the CuPy wheel matching your driver's CUDA version: `cupy-cuda12x` (CUDA 12.x, the default here) or `cupy-cuda11x` (CUDA 11.x).
-> - Kernels are JIT-compiled at runtime via NVRTC, which ships inside the CuPy wheel.
-> - If CUDA is unavailable, the GPU compute test falls back to a CPU scalar implementation automatically.
+> - Install the CuPy wheel matching your driver's CUDA version, **with the `[ctk]` extra**: `cupy-cuda12x[ctk]` (CUDA 12.x, the default here) or `cupy-cuda11x[ctk]` (CUDA 11.x).
+> - The compute kernel is JIT-compiled at runtime via NVRTC, which requires the CUDA toolkit **headers**. These are not in the base CuPy wheel — the `[ctk]` extra pulls them in (`nvidia-cuda-nvrtc-cu12`, `nvidia-cuda-runtime-cu12`, …). Without it, the compute test fails with *"Failed to find CUDA headers."*
+> - If no NVIDIA GPU is detected, the GPU benchmark is **skipped entirely** (it is omitted from the results and scores rather than falling back to the CPU).
 
 ---
 
@@ -298,7 +298,7 @@ f.write(data)   # or f.read(block_size)
 
 ### GPU
 
-Uses **CuPy** to execute compute workloads on the GPU. If no CUDA device is detected, the compute test falls back to a CPU scalar loop automatically — `vram_bw` returns `null` in that case.
+Uses **CuPy** to execute compute workloads on the GPU. If no CUDA device is detected, the entire GPU benchmark is **skipped** — it is omitted from the results and scores rather than run on the CPU.
 
 **GPU Compute** — Compiles and dispatches a CUDA C kernel on-the-fly (via `cupy.RawKernel`, JIT-compiled with NVRTC) over a **16M-element** `float32` array in parallel across all GPU cores. Each thread runs an inner loop (`COMPUTE_INNER_ITERS`, default **256**) of `sqrt · log · sin` to raise arithmetic intensity and saturate the cores rather than being purely memory-bound. The kernel is compiled once and reused across launches to avoid per-iteration overhead. Result is reported in **MOps/s**, normalized by the inner-loop count so the figure is invariant to the intensity setting.
 
@@ -423,7 +423,7 @@ Each run produces a JSON file in `results/` with the following structure:
 | `psutil`       | CPU, RAM, and disk metrics                       |
 | `nvidia-ml-py` | Hardware identification (NVML) in exporter.py    |
 | `py-cpuinfo`   | Detailed CPU model information                   |
-| `cupy-cuda12x` | GPU compute kernel execution (CUDA via CuPy)     |
+| `cupy-cuda12x[ctk]` | GPU compute kernel execution (CUDA via CuPy); the `[ctk]` extra supplies the CUDA headers NVRTC needs to JIT-compile kernels |
 | `numpy`        | Array operations for GPU benchmark               |
 
 ---
@@ -431,7 +431,7 @@ Each run produces a JSON file in `results/` with the following structure:
 ## Limitations
 
 - **CPU temperature** requires platform-specific drivers (e.g., OpenHardwareMonitor on Windows, `lm-sensors` on Linux). PyBench reports `null` if unavailable.
-- **GPU benchmarking & monitoring** target NVIDIA GPUs (CUDA / `nvidia-smi`). Intel/AMD integrated graphics are not supported by the CUDA compute test (it falls back to the CPU), are not monitored via `nvidia-smi`, and temperature/usage stats may fall back to WMI on Windows if `nvidia-smi` is unavailable.
+- **GPU benchmarking** targets NVIDIA GPUs (CUDA via CuPy). On a machine with no NVIDIA GPU, the GPU benchmark is skipped entirely. The compute test additionally requires the CUDA headers from the `[ctk]` extra (see the CUDA note in Installation); without them it reports a build error and only VRAM bandwidth is measured.
 - **Disk benchmark** creates a temporary file (1 GB by default, or ≈1.5× RAM with `exceed_ram=True`). Ensure the target directory has sufficient free space.
 - **Multi-core CPU test** uses `ProcessPoolExecutor` to escape the GIL, so it reflects genuine parallel throughput across cores. The single-thread, compression, encryption, and prime tests still run pure-Python workloads, so absolute numbers reflect interpreter-level performance — consistent and comparable across machines on the same Python version, but not directly comparable to native-compiled tools.
 - **Multiprocessing** requires the program to be launched via `python main.py` (the entry point is guarded by `if __name__ == "__main__"`), which is necessary for the "spawn" start method on Windows/macOS.

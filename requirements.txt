@@ -4,4 +4,7 @@ GPUtil>=1.4.0
 nvidia-ml-py>=11.525.0
 py-cpuinfo>=9.0.0
 cupy-cuda12x>=13.0.0
+# Only the CUDA components the kernel uses (nvrtc + runtime/headers + curand),
+# not the full [ctk] bundle (skips cuBLAS/cuFFT/cuSOLVER/cuSPARSE/nvJitLink).
+cuda-toolkit[cudart,curand,nvrtc]>=12.0
 numpy>=1.24.0

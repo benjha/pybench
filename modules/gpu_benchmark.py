@@ -40,6 +40,9 @@ class GPUBenchmark:
         self.duration = duration
         self.cuda_ok = False
         self.device = None
+        # Captures the reason the compute test failed (e.g. NVRTC build
+        # error) so it can be reported instead of silently showing "N/A".
+        self.compute_error = None
         self._init_cuda()
 
     def _init_cuda(self):
@@ -77,6 +80,8 @@ class GPUBenchmark:
         try:
             import numpy as np
             SIZE = 16 * 1024 * 1024
+            # Generate the input directly on the GPU so host generation and the
+            # PCIe transfer aren't counted in the compute measurement.
             src = cp.random.rand(SIZE, dtype=cp.float32)
             dst = cp.empty_like(src)
             kernel = cp.RawKernel(r"""
@@ -94,10 +99,15 @@ class GPUBenchmark:
             """ % COMPUTE_INNER_ITERS, "compute")
             block = 256
             grid = (SIZE + block - 1) // block
+            n = np.int32(SIZE)
+            # Warm-up launch: forces NVRTC compilation now, so any build error
+            # is raised (and captured) here rather than skewing the timing.
+            kernel((grid,), (block,), (src, dst, n))
+            cp.cuda.runtime.deviceSynchronize()
             count = 0
             start = time.perf_counter()
             while time.perf_counter() - start < self.duration:
-                kernel((grid,), (block,), (src, dst, np.int32(SIZE)))
+                kernel((grid,), (block,), (src, dst, n))
                 cp.cuda.runtime.deviceSynchronize()
                 count += 1
             elapsed = time.perf_counter() - start
@@ -105,7 +115,8 @@ class GPUBenchmark:
             # invariant to the compute-intensity knob (matches the original
             # single-op-per-element scale when COMPUTE_INNER_ITERS == 1).
             return (count * SIZE * COMPUTE_INNER_ITERS) / elapsed / 1e6
-        except Exception:
+        except Exception as e:
+            self.compute_error = f"{type(e).__name__}: {e}"
             return None
 
     # ── VRAM bandwidth ────────────────────────────────────────────────────────
@@ -151,6 +162,10 @@ class GPUBenchmark:
         if verbose:
             print("  Running GPU Compute test...")
         results["compute"] = self.compute()
+        if self.compute_error:
+            # Record why compute failed so it isn't an unexplained "N/A".
+            results["compute_error"] = self.compute_error
+            print(f"  [WARNING] GPU compute test failed: {self.compute_error}")
         if verbose:
             print("  Running VRAM Bandwidth test...")
         results["vram_bw"] = self.vram_bandwidth()   # may be None

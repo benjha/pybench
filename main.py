@@ -20,7 +20,6 @@ from scoring.scorer import Scorer
 from reporter.exporter import Exporter
 
 # Import UI components
-from ui.formatter import show_welcome
 from ui.results_view import display_results
 
 console = Console()
@@ -97,7 +96,6 @@ def main():
     VERBOSE = args.verbose
 
     os.system('cls' if os.name == 'nt' else 'clear')
-    show_welcome()
     run_benchmark_cycle()
 
 
