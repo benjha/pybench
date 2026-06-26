@@ -1,9 +1,8 @@
 """PyBench entry point.
 
-Wires together the four benchmark modules, the background system monitor, the
-scorer, and the JSON exporter, then renders progress and final results in the
-terminal with Rich. Run with ``python main.py`` (add ``--verbose`` for
-per-test logging).
+Wires together the four benchmark modules, the scorer, and the JSON exporter,
+then renders progress and final results in the terminal with Rich. Run with
+``python main.py`` (add ``--verbose`` for per-test logging).
 """
 import os
 import argparse
@@ -12,9 +11,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 from rich.live import Live
 
 # Import our modules
-from config import DEFAULT_DURATION, THREAD_COUNT, RESULTS_DIR, DEFAULT_MONITOR_INTERVAL
-from monitor.system_monitor import SystemMonitor
-from monitor.aggregator import aggregate_metrics
+from config import DEFAULT_DURATION, THREAD_COUNT, RESULTS_DIR
 from modules.cpu_benchmark import CPUBenchmark
 from modules.memory_benchmark import MemoryBenchmark
 from modules.disk_benchmark import DiskBenchmark
@@ -33,15 +30,10 @@ VERBOSE = False
 def run_benchmark_cycle():
     """Run all four benchmarks once, then score, export, and display results.
 
-    A background ``SystemMonitor`` samples hardware telemetry for the whole
-    run. Each module is executed in sequence inside a Rich ``Live`` view that
-    shows a progress bar for the active component. Afterwards the collected
-    metrics are aggregated, scored, written to a timestamped JSON report, and
-    printed as summary tables.
+    Each module is executed in sequence inside a Rich ``Live`` view that shows
+    a progress bar. Afterwards the results are scored, written to a timestamped
+    JSON report, and printed as summary tables.
     """
-    monitor = SystemMonitor(interval=DEFAULT_MONITOR_INTERVAL)
-    monitor.start()
-
     results = {}
 
     progress = Progress(
@@ -52,10 +44,7 @@ def run_benchmark_cycle():
         console=console
     )
 
-    # Sync UI refresh rate with monitor interval (at least 4 times per second for smoothness)
-    ui_refresh_rate = max(4, int(1 / DEFAULT_MONITOR_INTERVAL))
-
-    with Live(progress, refresh_per_second=ui_refresh_rate):
+    with Live(progress, refresh_per_second=10):
         task = progress.add_task(
             "[cyan]Running CPU Benchmark...", total=100)
         cpu_bench = CPUBenchmark(
@@ -82,18 +71,13 @@ def run_benchmark_cycle():
         results['gpu'] = gpu_bench.run_all(verbose=VERBOSE)
         progress.update(task, completed=100)
 
-    monitor.stop()
-    monitor.join()
-
     # Process results
-    metrics = monitor.get_metrics()
-    summary_metrics = aggregate_metrics(metrics)
     scorer = Scorer()
     scores = scorer.get_full_breakdown(results)
     exporter = Exporter(output_dir=RESULTS_DIR)
-    report_path = exporter.export(results, summary_metrics, scores)
+    report_path = exporter.export(results, scores)
 
-    display_results(results, scores, summary_metrics, report_path)
+    display_results(results, scores, report_path)
 
 
 def main():

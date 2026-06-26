@@ -6,17 +6,15 @@ from ui.formatter import mb_format
 console = Console()
 
 
-def display_results(results, scores, metrics, report_path):
-    """Print the three summary tables and the saved report path.
+def display_results(results, scores, report_path):
+    """Print the results and score summary tables plus the saved report path.
 
-    Renders raw per-test results, the score summary, and the hardware
-    monitoring summary. Only sections present in ``results``/``metrics`` are
-    shown, so partial runs display cleanly.
+    Renders raw per-test results and the score summary. Only sections present
+    in ``results`` are shown, so partial runs display cleanly.
 
     Args:
         results: Raw per-module benchmark results.
         scores: Per-module and overall scores.
-        metrics: Aggregated monitor statistics.
         report_path: Path to the exported JSON report.
     """
     console.print(
@@ -85,30 +83,4 @@ def display_results(results, scores, metrics, report_path):
                         f"[bold green]{scores.get('overall', 0):,}[/]")
     console.print(score_table)
 
-    # 3. SYSTEM STATS TABLE
-    stats_table = Table(title="📊 HARDWARE MONITORING SUMMARY",
-                        header_style="bold cyan", border_style="bright_blue")
-    stats_table.add_column("Group", style="dim", width=10)
-    stats_table.add_column("Metric Details (AVG / MIN-MAX)", style="white")
-
-    c = metrics.get('cpu') or {}
-    cf = metrics.get('cpu_freq') or {}
-    ct = metrics.get('cpu_temp') or {}
-    stats_table.add_row(
-        "CPU", f"Usage: [bold]{c.get('avg', 0)}%[/] | Clock: [bold]{cf.get('avg', 0):.0f}MHz[/] | Temp: [bold]{ct.get('avg', 0):.1f}°[/]")
-
-    r = metrics.get('ram') or {}
-    stats_table.add_row(
-        "RAM", f"Usage: [bold]{r.get('avg', 0)}%[/] ({r.get('min', 0)}% - {r.get('max', 0)}%)")
-
-    g = metrics.get('gpu')
-    if g:
-        gt = metrics.get('gpu_temp') or {}
-        gv = metrics.get('gpu_vram') or {}
-        stats_table.add_row(
-            "GPU", f"Usage: [bold]{g.get('avg', 0)}%[/] | Temp: [bold]{gt.get('avg', 0):.1f}°[/] | VRAM: [bold]{gv.get('avg', 0):.0f}MB[/]")
-    else:
-        stats_table.add_row("GPU", "N/A (No GPU Sensor detected)")
-
-    console.print(stats_table)
     console.print(f"\n[bold white]📂 Report:[/] [dim]{report_path}[/dim]")

@@ -127,12 +127,11 @@ class Exporter:
 
         return info
 
-    def export(self, results, system_monitor_data, scores):
+    def export(self, results, scores):
         """Write a timestamped JSON report and return its file path.
 
         Args:
             results: Raw per-module benchmark results.
-            system_monitor_data: Aggregated monitor statistics.
             scores: Per-module and overall scores.
         """
         run_id = time.strftime("%Y%m%d_%H%M%S")
@@ -143,7 +142,6 @@ class Exporter:
             "run_id": run_id,
             "timestamp": time.ctime(),
             "hardware": self.get_hardware_info(),
-            "system_monitor": system_monitor_data,
             "benchmark_results": results,
             "scores": scores
         }
